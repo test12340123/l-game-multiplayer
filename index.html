@@ -1,0 +1,1825 @@
+<html>
+<head>
+<style>
+.game-container {
+    position: relative;
+    width: 475px;
+    height: 475px;
+    margin: 0 auto;
+    margin-top: 50px;
+}
+
+.controls {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+#status {
+    text-align: center;
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+
+.player-info {
+    position: fixed;
+    bottom: 20px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    background: #fff;
+    padding: 10px;
+    border-top: 1px solid #ccc;
+}
+
+.lobby-container {
+    max-width: 600px;
+    margin: 40px auto;
+    padding: 20px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.lobby-header {
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+.lobby-header h1 {
+    color: #333;
+    font-size: 24px;
+    margin-bottom: 10px;
+}
+
+.create-room-btn {
+    background: #4CAF50;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    margin-bottom: 20px;
+}
+
+.create-room-btn:hover {
+    background: #45a049;
+}
+
+.room-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.room-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px;
+    margin: 10px 0;
+    background: #f5f5f5;
+    border-radius: 4px;
+    border-left: 4px solid #4CAF50;
+}
+
+.room-info {
+    flex: 1;
+}
+
+.room-id {
+    font-weight: bold;
+    color: #333;
+}
+
+.room-status {
+    font-size: 14px;
+    color: #666;
+}
+
+.join-btn {
+    background: #2196F3;
+    color: white;
+    border: none;
+    padding: 8px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.join-btn:hover {
+    background: #1976D2;
+}
+
+.join-btn:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+}
+</style>
+
+<script>
+var ws;
+var gameId;
+var playerNumber;
+var myTurn = false;
+var lastValidSquares = [];
+var roomId = null;
+var joined = false;
+
+// Modified connectToServer to accept roomId
+function connectToServer(room) {
+    ws = new WebSocket(location.origin.replace(/^http/, 'ws'));
+    ws.onopen = function() {
+        ws.send(JSON.stringify({ type: 'join-room', roomId: room }));
+    };
+    ws.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+
+        switch(data.type) {
+            case 'wait':
+                document.getElementById("status").innerHTML = data.message + (roomId ? " (Room: " + roomId + ")" : "");
+                break;
+            case 'start':
+                gameId = data.gameId;
+                playerNumber = data.playerNumber;
+                myTurn = playerNumber === turn;
+                updatePlayerInfo();
+                initializeBoard();
+                document.getElementById("status").innerHTML = "Game started in Room: " + roomId + ". Player " + getPlayerName(turn) + "'s turn.";
+                break;
+            case 'move':
+                if (data.playerNumber !== playerNumber) {
+                    handleOpponentMove(data);
+                }
+                break;
+            case 'opponent-disconnected':
+                document.getElementById("status").innerHTML = "Opponent disconnected!";
+                break;
+        }
+    };
+}
+
+// Room join logic
+function joinRoom() {
+    if (joined) return;
+    roomId = document.getElementById("roomInput").value.trim();
+    if (!roomId) {
+        alert("Please enter a Room ID!");
+        return;
+    }
+    document.getElementById("roomInput").disabled = true;
+    document.getElementById("joinRoomBtn").disabled = true;
+    joined = true;
+    connectToServer(roomId);
+}
+
+function handleOpponentMove(data) {
+    if (data.moveType === 'lshape') {
+        // Очищаємо всі клітинки опонента
+        let opponentColor = playerNumber === 1 ? 2 : 1;
+        for (let i = 1; i <= 16; i++) {
+            if (symbol[i] === opponentColor) {
+                symbol[i] = 0;
+                document.getElementById(String(i)).src = "fence_war_grey.gif";
+            }
+        }
+        
+        // Встановлюємо нову L-форму
+        for (let square of data.squares) {
+            symbol[square] = opponentColor;
+            document.getElementById(String(square)).src = 
+                opponentColor === 1 ? "fence_war_red.gif" : "fence_war_blue.gif";
+        }
+        
+        document.getElementById("status").innerHTML = "Opponent is moving coin...";
+        
+    } else if (data.moveType === 'coin') {
+        moveCoin(data.from, data.to);
+        nextTurn();
+    } else if (data.moveType === 'skip') {
+        nextTurn();
+    }
+}
+
+function moveCoin(from, to) {
+    symbol[to] = 3;
+    symbol[from] = 0;
+    document.getElementById(String(to)).src = "coin.jpg";
+    document.getElementById(String(from)).src = "fence_war_grey.gif";
+    if (from === coin1) {
+        coin1 = to;
+    } else if (from === coin2) {
+        coin2 = to;
+    }
+}
+
+function updatePlayerInfo() {
+    const playerInfo = document.createElement('div');
+    playerInfo.className = 'player-info';
+    playerInfo.innerHTML = `You are Player ${playerNumber} (${playerNumber === 1 ? 'Red' : 'Blue'})`;
+    document.body.appendChild(playerInfo);
+}
+
+function startDrag(whichbox) {
+    if (!myTurn || coinTurn) return false;
+
+    // Allow starting from any empty square or your own L
+    if (symbol[whichbox] !== 0 && symbol[whichbox] !== turn) return false;
+
+    isDragging = true;
+    selectedSquares = [whichbox];
+    lastValidSquares = [];
+
+    // Reset all pieces to their original state
+    for (var i = 1; i <= 16; i++) {
+        if (symbol[i] === turn) {
+            document.getElementById(String(i)).src = "fence_war_grey.gif";
+        }
+    }
+
+    var highlightColor = turn === 1 ? "fence_war_red.gif" : "fence_war_blue.gif";
+    document.getElementById(String(whichbox)).src = highlightColor;
+
+    return false;
+}
+
+function dragOver(whichbox) {
+    if (!isDragging || !myTurn || coinTurn) return;
+    
+    if (selectedSquares.length >= 4) return;
+    
+    // Перевіряємо, чи не вибрана вже ця клітинка
+    if (selectedSquares.includes(whichbox)) return;
+    
+    // Перевіряємо, чи клітинка вільна або належить поточному гравцю
+    if (symbol[whichbox] !== 0 && symbol[whichbox] !== turn) return;
+    
+    // Перевіряємо сусідство тільки якщо це не перша клітинка
+    if (selectedSquares.length > 0 && !isAdjacent(selectedSquares[selectedSquares.length - 1], whichbox)) return;
+    
+    selectedSquares.push(whichbox);
+    
+    var highlightColor = turn === 1 ? "fence_war_red.gif" : "fence_war_blue.gif";
+    document.getElementById(String(whichbox)).src = highlightColor;
+    
+    if (selectedSquares.length === 4) {
+        endDrag(); // <--- Додаємо це!
+    } else {
+        document.getElementById("status").innerHTML = `Selected ${selectedSquares.length} of 4 squares`;
+    }
+}
+
+function endDrag() {
+    if (!isDragging || !myTurn) return;
+
+    isDragging = false;
+
+    if (selectedSquares.length === 4) {
+        if (isProperLShape(selectedSquares)) {
+            if (isValidPlacement(selectedSquares)) {
+                moveLShape(selectedSquares);
+                document.getElementById("status").innerHTML = "L shape placed! Now you can move a coin or skip";
+                document.getElementById("coinBtn").style.display = "inline";
+                document.getElementById("skipBtn").style.display = "inline";
+            } else {
+                document.getElementById("status").innerHTML = "Invalid placement! Cannot overlap opponent's pieces or coins, or leave L in the same place.";
+                setTimeout(() => {
+                    resetSelection();
+                    selectedSquares = [];
+                }, 500);
+            }
+        } else {
+            document.getElementById("status").innerHTML = "Invalid L! Please try again.";
+            setTimeout(() => {
+                resetSelection();
+                selectedSquares = [];
+            }, 500);
+        }
+    } else {
+        document.getElementById("status").innerHTML = "You must select exactly 4 squares to form an L shape.";
+        setTimeout(() => {
+            resetSelection();
+            selectedSquares = [];
+        }, 500);
+    }
+}
+
+var symbol = [17];
+var turn = 2;
+var coinTurn = false;
+var coin1 = 1;
+var coin2 = 16;
+var selectedSquares = [];
+var isDragging = false;
+
+for (num = 0; num < 17; num++) {
+symbol[num] = 0;
+}
+
+symbol[6] = 1;  
+symbol[10] = 1; 
+symbol[14] = 1; 
+symbol[15] = 1; 
+
+symbol[2] = 2;  
+symbol[3] = 2; 
+symbol[7] = 2;  
+symbol[11] = 2; 
+
+symbol[coin1] = 3; 
+symbol[coin2] = 3; 
+
+function getPlayerName(playerNum) {
+return playerNum === 1 ? "Red" : "Blue";
+}
+
+function resetSelection() {
+
+for (var i = 1; i <= 16; i++) {
+
+if (symbol[i] == 1) {
+
+document.getElementById(String(i)).src = "fence_war_red.gif";
+} else if (symbol[i] == 2) {
+
+document.getElementById(String(i)).src = "fence_war_blue.gif";
+} else if (symbol[i] == 3) {
+
+document.getElementById(String(i)).src = "coin.jpg";
+} else {
+
+document.getElementById(String(i)).src = "fence_war_grey.gif";  
+} 
+
+}
+selectedSquares = [];
+}
+
+function isAdjacent(pos1, pos2) {
+
+var row1 = Math.ceil(pos1 / 4);
+var col1 = pos1 % 4;
+if (col1 === 0) col1 = 4;
+
+var row2 = Math.ceil(pos2 / 4);
+var col2 = pos2 % 4;
+if (col2 === 0) col2 = 4;
+
+return (Math.abs(row1 - row2) === 1 && col1 === col2) || (Math.abs(col1 - col2) === 1 && row1 === row2);
+}
+
+function isConnectedShape(positions) {
+
+if (positions.length <= 1) return true;
+var adjacencyList = {};
+
+for (var i = 0; i < positions.length; i++) {
+adjacencyList[i] = [];
+}
+
+for (var i = 0; i < positions.length; i++) {
+for (var j = i + 1; j < positions.length; j++) {
+
+if (isAdjacent(positions[i], positions[j])) {
+adjacencyList[i].push(j);
+adjacencyList[j].push(i);
+}
+
+}
+
+}
+
+var visited = [];
+for (var i = 0; i < positions.length; i++) {
+visited.push(false);
+}
+
+var queue = [0];
+visited[0] = true;
+
+while (queue.length > 0) {
+var current = queue.shift();
+for (var i = 0; i < adjacencyList[current].length; i++) {
+var neighbor = adjacencyList[current][i];
+
+if (!visited[neighbor]) {
+visited[neighbor] = true;
+queue.push(neighbor);
+}
+
+}
+
+}
+
+for (var i = 0; i < visited.length; i++) {
+if (!visited[i]) return false;
+}
+
+return true;
+}
+
+function isProperLShape(positions) {
+
+if (positions.length !== 4) return false;
+
+var coords = [];
+for (var i = 0; i < positions.length; i++) {
+
+var pos = positions[i];
+var row = Math.ceil(pos / 4);
+var col = pos % 4;
+
+if (col === 0) col = 4;
+
+coords.push([row, col]);
+}
+
+var allSameRow = true;
+var allSameCol = true;
+
+for (var i = 1; i < coords.length; i++) {
+
+if (coords[i][0] !== coords[0][0]) allSameRow = false;
+if (coords[i][1] !== coords[0][1]) allSameCol = false;
+}
+
+if (allSameRow || allSameCol) return false;
+if (!isConnectedShape(positions)) return false;
+
+var minRow = 5, minCol = 5, maxRow = 0, maxCol = 0;
+
+for (var i = 0; i < coords.length; i++) {
+
+minRow = Math.min(minRow, coords[i][0]);
+minCol = Math.min(minCol, coords[i][1]);
+maxRow = Math.max(maxRow, coords[i][0]);
+maxCol = Math.max(maxCol, coords[i][1]);
+}
+
+if (maxRow - minRow > 2 || maxCol - minCol > 2) {
+
+return false;
+}
+
+var grid = [];
+
+for (var i = 0; i < 3; i++) {
+grid[i] = [0, 0, 0];
+}
+
+for (var i = 0; i < coords.length; i++) {
+
+var relRow = coords[i][0] - minRow;
+var relCol = coords[i][1] - minCol;
+
+if (relRow < 3 && relCol < 3) {
+
+grid[relRow][relCol] = 1;}}
+  
+for (var i = 0; i < 3; i++) {
+
+if (i < 2 && grid[i][0] == 1 && grid[i][1] == 1 && grid[i+1][1] == 1 && grid[i+1][2] == 1) {
+return false;
+}
+
+if (i < 2 && grid[i][1] == 1 && grid[i][2] == 1 && grid[i+1][0] == 1 && grid[i+1][1] == 1) {
+return false;
+}
+
+if (i < 2 && grid[0][i] == 1 && grid[1][i] == 1 && grid[1][i+1] == 1 && grid[2][i+1] == 1) {
+return false;
+}
+
+if (i < 2 && grid[0][i+1] == 1 && grid[1][i] == 1 && grid[1][i+1] == 1 && grid[2][i] == 1) {
+return false; 
+}
+
+}
+
+var adjacencyList = {};
+
+for (var i = 0; i < positions.length; i++) {
+adjacencyList[i] = [];
+}
+
+for (var i = 0; i < positions.length; i++) {
+for (var j = i + 1; j < positions.length; j++) {
+
+if (isAdjacent(positions[i], positions[j])) {
+adjacencyList[i].push(j);
+adjacencyList[j].push(i);
+}
+
+}
+
+}
+
+var connectionCounts = [];
+
+for (var i = 0; i < positions.length; i++) {
+connectionCounts.push(adjacencyList[i].length);
+}
+
+var endpointCount = 0;
+for (var i = 0; i < connectionCounts.length; i++) {
+
+if (connectionCounts[i] === 1) endpointCount++;
+}
+
+
+return endpointCount === 2;
+}
+
+function isValidPlacement(squares) {
+    // Не можна займати чужі клітини або монетки
+    for (var i = 0; i < squares.length; i++) {
+        var box = squares[i];
+        if (symbol[box] !== 0 && symbol[box] !== turn) {
+            return false;
+        }
+    }
+    // Не можна залишати L на тому ж місці
+    var currentL = [];
+    for (var i = 1; i <= 16; i++) {
+        if (symbol[i] === turn) currentL.push(i);
+    }
+    currentL.sort();
+    var newL = squares.slice().sort();
+    var same = currentL.length === newL.length;
+    if (same) {
+        for (var i = 0; i < currentL.length; i++) {
+            if (currentL[i] !== newL[i]) {
+                same = false;
+                break;
+            }
+        }
+    }
+    if (same) return false;
+    return true;
+}
+
+function moveLShape(newSquares) {
+    // Очищаємо старі позиції
+    for (var i = 1; i <= 16; i++) {
+        if (symbol[i] === turn) {
+            symbol[i] = 0;
+            document.getElementById(String(i)).src = "fence_war_grey.gif";
+        }
+    }
+    // Встановлюємо нові позиції
+    for (var i = 0; i < newSquares.length; i++) {
+        var box = newSquares[i];
+        symbol[box] = turn;
+        var pieceImage = turn === 1 ? "fence_war_red.gif" : "fence_war_blue.gif";
+        document.getElementById(String(box)).src = pieceImage;
+    }
+    // Дозволяємо хід монеткою
+    coinTurn = true;
+    // Відправляємо хід на сервер
+    sendMove({
+        moveType: 'lshape',
+        squares: newSquares
+    });
+    // myTurn залишаємо true для монетки
+}
+
+function sendMove(moveData) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        const data = {
+            gameId: gameId,
+            playerNumber: playerNumber,
+            ...moveData
+        };
+        ws.send(JSON.stringify(data));
+        // Only set myTurn = false if the move is not 'lshape'
+        if (moveData.moveType === 'coin' || moveData.moveType === 'skip') {
+            myTurn = false;
+            document.getElementById("status").innerHTML = "Waiting for opponent's move...";
+        }
+        // For 'lshape', keep myTurn = true for the coin phase
+    }
+}
+
+function selectCoin(whichbox) {
+    if (!myTurn || !coinTurn) return;
+
+    // Якщо вибираємо монетку вперше
+    if (selectedSquares.length === 0) {
+        if (symbol[whichbox] === 3) {
+            selectedSquares.push(whichbox);
+            // Підсвічуємо вибрану монетку
+            document.getElementById(String(whichbox)).style.border = "2px solid yellow";
+            // Показуємо підказку
+            document.getElementById("status").innerHTML = "Now click an empty square to move the coin";
+            
+            // Очищаємо підсвічування інших монеток
+            if (whichbox !== coin1 && symbol[coin1] === 3) {
+                document.getElementById(String(coin1)).style.border = "";
+            }
+            if (whichbox !== coin2 && symbol[coin2] === 3) {
+                document.getElementById(String(coin2)).style.border = "";
+            }
+        }
+        return;
+    }
+
+    // Якщо вже вибрали монетку і тепер вибираємо куди її переміщати
+    if (selectedSquares.length === 1) {
+        if (symbol[whichbox] === 0) {
+            var oldPos = selectedSquares[0];
+            
+            // Переміщаємо монетку
+            symbol[whichbox] = 3;
+            symbol[oldPos] = 0;
+            
+            // Оновлюємо відображення
+            document.getElementById(String(whichbox)).src = "coin.jpg";
+            document.getElementById(String(oldPos)).src = "fence_war_grey.gif";
+            document.getElementById(String(oldPos)).style.border = "";
+            
+            // Оновлюємо позиції монеток
+            if (oldPos === coin1) {
+                coin1 = whichbox;
+            } else if (oldPos === coin2) {
+                coin2 = whichbox;
+            }
+
+            // Відправляємо хід
+            sendMove({
+                moveType: 'coin',
+                from: oldPos,
+                to: whichbox
+            });
+
+            // Скидаємо стан
+            coinTurn = false;
+            selectedSquares = [];
+            // myTurn = false; // Now handled in sendMove
+
+            // Оновлюємо інтерфейс
+            document.getElementById("coinBtn").style.display = "none";
+            document.getElementById("skipBtn").style.display = "none";
+            // document.getElementById("status").innerHTML = "Waiting for opponent's move..."; // Now handled in sendMove
+        }
+    }
+}
+
+function startCoinTurn() {
+    if (!myTurn || !coinTurn) return;
+    
+    // Очищаємо старі підсвічування
+    if (symbol[coin1] === 3) {
+        document.getElementById(String(coin1)).style.border = "2px solid yellow";
+    }
+    if (symbol[coin2] === 3) {
+        document.getElementById(String(coin2)).style.border = "2px solid yellow";
+    }
+
+    selectedSquares = [];
+    document.getElementById("status").innerHTML = "Select a coin to move, or click Skip";
+    document.getElementById("coinBtn").style.display = "none";
+    document.getElementById("skipBtn").style.display = "inline";
+}
+
+function skipCoinMove() {
+    if (!myTurn || !coinTurn) return;
+
+    // Очищаємо підсвічування
+    if (symbol[coin1] === 3) {
+        document.getElementById(String(coin1)).style.border = "";
+    }
+    if (symbol[coin2] === 3) {
+        document.getElementById(String(coin2)).style.border = "";
+    }
+
+    // Відправляємо хід
+    sendMove({
+        moveType: 'skip'
+    });
+
+    // Міняємо хід
+    turn = turn === 1 ? 2 : 1;
+    // myTurn = false; // Now handled in sendMove
+    coinTurn = false;
+
+    // Оновлюємо інтерфейс
+    document.getElementById("coinBtn").style.display = "none";
+    document.getElementById("skipBtn").style.display = "none";
+    // document.getElementById("status").innerHTML = "Waiting for opponent's move..."; // Now handled in sendMove
+}
+
+function hasValidMoves() {
+
+var currentLShape = [];
+for (var i = 1; i <= 16; i++) {
+if (symbol[i] === turn) {
+
+currentLShape.push(i);
+}
+
+}
+
+var originalSymbol = symbol.slice();
+for (var i = 1; i <= 16; i++) {
+
+if (symbol[i] === turn) {
+symbol[i] = 0;
+}
+
+}
+
+var shapes = [
+
+[[0,0], [1,0], [2,0], [2,1]],
+[[0,0], [0,1], [0,2], [1,0]],  
+[[0,0], [0,1], [1,1], [2,1]], 
+[[0,0], [1,0], [1,1], [1,2]], 
+[[0,0], [1,0], [2,0], [0,1]],  
+[[0,0], [0,1], [0,2], [1,2]], 
+[[0,0], [0,1], [1,0], [2,0]], 
+[[0,0], [1,0], [1,1], [1,2]]  
+];
+
+var foundValidMove = false;
+
+for (var s = 0; s < shapes.length; s++) {
+for (var startRow = 1; startRow <= 4; startRow++) {
+for (var startCol = 1; startCol <= 4; startCol++) {
+
+var positions = [];
+var valid = true;
+
+for (var i = 0; i < shapes[s].length; i++) {
+
+var row = startRow + shapes[s][i][0];
+var col = startCol + shapes[s][i][1];
+
+if (row < 1 || row > 4 || col < 1 || col > 4) {
+valid = false;
+
+break;
+}
+
+var pos = (row - 1) * 4 + col;
+if (symbol[pos] !== 0) {
+valid = false;
+
+break;
+}
+positions.push(pos);
+}
+
+if (valid && positions.length === 4) {
+
+positions.sort();
+var sortedCurrentL = currentLShape.slice().sort();
+var isDifferent = false;
+
+if (positions.length !== sortedCurrentL.length) {
+isDifferent = true;
+
+} else {
+
+for (var i = 0; i < positions.length; i++) {
+if (positions[i] !== sortedCurrentL[i]) {
+
+isDifferent = true;
+
+break;
+}
+
+}
+
+}
+
+if (isDifferent) {
+
+foundValidMove = true;
+
+break;
+}
+
+}
+
+}
+if (foundValidMove) break;
+}
+
+if (foundValidMove) break;
+}
+
+symbol = originalSymbol;
+
+return foundValidMove;
+}
+
+function checkWinCondition() {
+
+var nextTurn = turn == 1 ? 2 : 1;
+var currentTurn = turn;
+turn = nextTurn;
+
+var hasMove = hasValidMoves();
+turn = currentTurn;
+
+if (!hasMove) {
+document.getElementById("status").innerHTML = "Game Over! Player " + getPlayerName(turn) + " wins! Player " + getPlayerName(nextTurn) + " has no valid moves.";
+
+coinTurn = true;
+
+document.getElementById("coinBtn").style.display = "none";
+document.getElementById("skipBtn").style.display = "none";
+
+return true;
+}
+return false;
+}
+
+function initializeBoard() {
+
+for (var i = 1; i <= 16; i++) {
+if (symbol[i] == 1) {
+
+document.getElementById(String(i)).src = "fence_war_red.gif";
+
+} else if (symbol[i] == 2) {
+
+document.getElementById(String(i)).src = "fence_war_blue.gif";
+
+} else if (symbol[i] == 3) {
+
+document.getElementById(String(i)).src = "coin.jpg";
+
+} else {
+
+document.getElementById(String(i)).src = "fence_war_grey.gif";
+}
+
+}
+
+document.getElementById("status").innerHTML = "Player " + getPlayerName(turn) + "'s turn. Drag to select your L shape.";
+document.getElementById("coinBtn").style.display = "none";
+document.getElementById("skipBtn").style.display = "none";
+}
+
+function nextTurn() {
+    turn = playerNumber;
+    myTurn = true;
+    coinTurn = false;
+    document.getElementById("status").innerHTML = "Your turn. Drag to select your L shape.";
+}
+
+// --- Lobby logic ---
+function randomRoomCode() {
+    return Math.random().toString(36).substr(2, 6).toUpperCase();
+}
+
+function createRoom() {
+    const code = randomRoomCode();
+    joinRoom(code);
+}
+
+function joinRoom(code) {
+    if (joined) return;
+    roomId = code;
+    joined = true;
+    document.getElementById("lobby").style.display = "none";
+    document.getElementById("gameArea").style.display = "block";
+    connectToServer(roomId);
+}
+
+function renderRoomList(rooms) {
+    const ul = document.getElementById("roomList");
+    ul.innerHTML = "";
+    rooms.forEach(room => {
+        const li = document.createElement("li");
+        li.className = "room-item";
+        
+        const info = document.createElement("div");
+        info.className = "room-info";
+        info.innerHTML = `
+            <div class="room-id">Кімната: ${room.roomId}</div>
+            <div class="room-status">
+                ${room.players}/2 гравців | ${room.status}
+            </div>
+        `;
+        
+        li.appendChild(info);
+        
+        if (room.players === 1) {
+            const btn = document.createElement("button");
+            btn.className = "join-btn";
+            btn.textContent = "Приєднатись";
+            btn.onclick = function() { joinRoom(room.roomId); };
+            li.appendChild(btn);
+        }
+        
+        ul.appendChild(li);
+    });
+}
+
+// --- WebSocket room list polling ---
+let lobbyWs;
+function pollRooms() {
+    if (lobbyWs && lobbyWs.readyState === WebSocket.OPEN) {
+        lobbyWs.send(JSON.stringify({ type: "list-rooms" }));
+    }
+}
+function setupLobbyWs() {
+    lobbyWs = new WebSocket(location.origin.replace(/^http/, 'ws'));
+    lobbyWs.onopen = function() {
+        pollRooms();
+        setInterval(pollRooms, 2000);
+    };
+    lobbyWs.onmessage = function(event) {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === "room-list") {
+            renderRoomList(data.rooms);
+        }
+    };
+}
+window.onload = function() {
+    setupLobbyWs();
+    initializeBoard();
+};
+// --- end lobby logic ---
+</script>
+
+<div id="lobby" class="lobby-container">
+    <div class="lobby-header">
+        <h1>L-Game Lobby</h1>
+        <button class="create-room-btn" onclick="createRoom();" id="createRoomBtn">
+            Create New Room
+        </button>
+    </div>
+    
+    <div class="rooms-container">
+        <h2>Available Rooms:</h2>
+        <ul id="roomList" class="room-list">
+            <!-- Rooms will be added here dynamically -->
+        </ul>
+    </div>
+</div>
+
+<div id="gameArea" style="display:none;">
+    <div class="controls">
+        <div id="status"></div>
+        <button id="coinBtn" onclick="startCoinTurn();" style="display: none;">Move Coin</button>
+        <button id="skipBtn" onclick="skipCoinMove();" style="display: none;">Skip</button>
+    </div>
+    <div class="game-container">
+        <img src="fence_war_grey.gif" id="1" style="position: absolute; left: 0px; top: 0px" onmousedown="startDrag(1);" onmouseover="dragOver(1);" onmouseup="endDrag();" onclick="selectCoin(1);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="2" style="position: absolute; left: 100px; top: 0px" onmousedown="startDrag(2);" onmouseover="dragOver(2);" onmouseup="endDrag();" onclick="selectCoin(2);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="3" style="position: absolute; left: 200px; top: 0px" onmousedown="startDrag(3);" onmouseover="dragOver(3);" onmouseup="endDrag();" onclick="selectCoin(3);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="4" style="position: absolute; left: 300px; top: 0px" onmousedown="startDrag(4);" onmouseover="dragOver(4);" onmouseup="endDrag();" onclick="selectCoin(4);" height="75" width="75">
+
+        <img src="fence_war_grey.gif" id="5" style="position: absolute; left: 0px; top: 100px" onmousedown="startDrag(5);" onmouseover="dragOver(5);" onmouseup="endDrag();" onclick="selectCoin(5);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="6" style="position: absolute; left: 100px; top: 100px" onmousedown="startDrag(6);" onmouseover="dragOver(6);" onmouseup="endDrag();" onclick="selectCoin(6);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="7" style="position: absolute; left: 200px; top: 100px" onmousedown="startDrag(7);" onmouseover="dragOver(7);" onmouseup="endDrag();" onclick="selectCoin(7);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="8" style="position: absolute; left: 300px; top: 100px" onmousedown="startDrag(8);" onmouseover="dragOver(8);" onmouseup="endDrag();" onclick="selectCoin(8);" height="75" width="75">
+
+        <img src="fence_war_grey.gif" id="9" style="position: absolute; left: 0px; top: 200px" onmousedown="startDrag(9);" onmouseover="dragOver(9);" onmouseup="endDrag();" onclick="selectCoin(9);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="10" style="position: absolute; left: 100px; top: 200px" onmousedown="startDrag(10);" onmouseover="dragOver(10);" onmouseup="endDrag();" onclick="selectCoin(10);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="11" style="position: absolute; left: 200px; top: 200px" onmousedown="startDrag(11);" onmouseover="dragOver(11);" onmouseup="endDrag();" onclick="selectCoin(11);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="12" style="position: absolute; left: 300px; top: 200px" onmousedown="startDrag(12);" onmouseover="dragOver(12);" onmouseup="endDrag();" onclick="selectCoin(12);" height="75" width="75">
+
+        <img src="fence_war_grey.gif" id="13" style="position: absolute; left: 0px; top: 300px" onmousedown="startDrag(13);" onmouseover="dragOver(13);" onmouseup="endDrag();" onclick="selectCoin(13);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="14" style="position: absolute; left: 100px; top: 300px" onmousedown="startDrag(14);" onmouseover="dragOver(14);" onmouseup="endDrag();" onclick="selectCoin(14);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="15" style="position: absolute; left: 200px; top: 300px" onmousedown="startDrag(15);" onmouseover="dragOver(15);" onmouseup="endDrag();" onclick="selectCoin(15);" height="75" width="75">
+        <img src="fence_war_grey.gif" id="16" style="position: absolute; left: 300px; top: 300px" onmousedown="startDrag(16);" onmouseover="dragOver(16);" onmouseup="endDrag();" onclick="selectCoin(16);" height="75" width="75">
+    </div>
+</div>
+
+<script>
+var ws;
+var gameId;
+var playerNumber;
+var myTurn = false;
+var lastValidSquares = [];
+var roomId = null;
+var joined = false;
+
+// Modified connectToServer to accept roomId
+function connectToServer(room) {
+    ws = new WebSocket(location.origin.replace(/^http/, 'ws'));
+    ws.onopen = function() {
+        ws.send(JSON.stringify({ type: 'join-room', roomId: room }));
+    };
+    ws.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+
+        switch(data.type) {
+            case 'wait':
+                document.getElementById("status").innerHTML = data.message + (roomId ? " (Room: " + roomId + ")" : "");
+                break;
+            case 'start':
+                gameId = data.gameId;
+                playerNumber = data.playerNumber;
+                myTurn = playerNumber === turn;
+                updatePlayerInfo();
+                initializeBoard();
+                document.getElementById("status").innerHTML = "Game started in Room: " + roomId + ". Player " + getPlayerName(turn) + "'s turn.";
+                break;
+            case 'move':
+                if (data.playerNumber !== playerNumber) {
+                    handleOpponentMove(data);
+                }
+                break;
+            case 'opponent-disconnected':
+                document.getElementById("status").innerHTML = "Opponent disconnected!";
+                break;
+        }
+    };
+}
+
+// Room join logic
+function joinRoom() {
+    if (joined) return;
+    roomId = document.getElementById("roomInput").value.trim();
+    if (!roomId) {
+        alert("Please enter a Room ID!");
+        return;
+    }
+    document.getElementById("roomInput").disabled = true;
+    document.getElementById("joinRoomBtn").disabled = true;
+    joined = true;
+    connectToServer(roomId);
+}
+
+function handleOpponentMove(data) {
+    if (data.moveType === 'lshape') {
+        // Очищаємо всі клітинки опонента
+        let opponentColor = playerNumber === 1 ? 2 : 1;
+        for (let i = 1; i <= 16; i++) {
+            if (symbol[i] === opponentColor) {
+                symbol[i] = 0;
+                document.getElementById(String(i)).src = "fence_war_grey.gif";
+            }
+        }
+        
+        // Встановлюємо нову L-форму
+        for (let square of data.squares) {
+            symbol[square] = opponentColor;
+            document.getElementById(String(square)).src = 
+                opponentColor === 1 ? "fence_war_red.gif" : "fence_war_blue.gif";
+        }
+        
+        document.getElementById("status").innerHTML = "Opponent is moving coin...";
+        
+    } else if (data.moveType === 'coin') {
+        moveCoin(data.from, data.to);
+        nextTurn();
+    } else if (data.moveType === 'skip') {
+        nextTurn();
+    }
+}
+
+function moveCoin(from, to) {
+    symbol[to] = 3;
+    symbol[from] = 0;
+    document.getElementById(String(to)).src = "coin.jpg";
+    document.getElementById(String(from)).src = "fence_war_grey.gif";
+    if (from === coin1) {
+        coin1 = to;
+    } else if (from === coin2) {
+        coin2 = to;
+    }
+}
+
+function updatePlayerInfo() {
+    const playerInfo = document.createElement('div');
+    playerInfo.className = 'player-info';
+    playerInfo.innerHTML = `You are Player ${playerNumber} (${playerNumber === 1 ? 'Red' : 'Blue'})`;
+    document.body.appendChild(playerInfo);
+}
+
+function startDrag(whichbox) {
+    if (!myTurn || coinTurn) return false;
+
+    // Allow starting from any empty square or your own L
+    if (symbol[whichbox] !== 0 && symbol[whichbox] !== turn) return false;
+
+    isDragging = true;
+    selectedSquares = [whichbox];
+    lastValidSquares = [];
+
+    // Reset all pieces to their original state
+    for (var i = 1; i <= 16; i++) {
+        if (symbol[i] === turn) {
+            document.getElementById(String(i)).src = "fence_war_grey.gif";
+        }
+    }
+
+    var highlightColor = turn === 1 ? "fence_war_red.gif" : "fence_war_blue.gif";
+    document.getElementById(String(whichbox)).src = highlightColor;
+
+    return false;
+}
+
+function dragOver(whichbox) {
+    if (!isDragging || !myTurn || coinTurn) return;
+    
+    if (selectedSquares.length >= 4) return;
+    
+    // Перевіряємо, чи не вибрана вже ця клітинка
+    if (selectedSquares.includes(whichbox)) return;
+    
+    // Перевіряємо, чи клітинка вільна або належить поточному гравцю
+    if (symbol[whichbox] !== 0 && symbol[whichbox] !== turn) return;
+    
+    // Перевіряємо сусідство тільки якщо це не перша клітинка
+    if (selectedSquares.length > 0 && !isAdjacent(selectedSquares[selectedSquares.length - 1], whichbox)) return;
+    
+    selectedSquares.push(whichbox);
+    
+    var highlightColor = turn === 1 ? "fence_war_red.gif" : "fence_war_blue.gif";
+    document.getElementById(String(whichbox)).src = highlightColor;
+    
+    if (selectedSquares.length === 4) {
+        endDrag(); // <--- Додаємо це!
+    } else {
+        document.getElementById("status").innerHTML = `Selected ${selectedSquares.length} of 4 squares`;
+    }
+}
+
+function endDrag() {
+    if (!isDragging || !myTurn) return;
+
+    isDragging = false;
+
+    if (selectedSquares.length === 4) {
+        if (isProperLShape(selectedSquares)) {
+            if (isValidPlacement(selectedSquares)) {
+                moveLShape(selectedSquares);
+                document.getElementById("status").innerHTML = "L shape placed! Now you can move a coin or skip";
+                document.getElementById("coinBtn").style.display = "inline";
+                document.getElementById("skipBtn").style.display = "inline";
+            } else {
+                document.getElementById("status").innerHTML = "Invalid placement! Cannot overlap opponent's pieces or coins, or leave L in the same place.";
+                setTimeout(() => {
+                    resetSelection();
+                    selectedSquares = [];
+                }, 500);
+            }
+        } else {
+            document.getElementById("status").innerHTML = "Invalid L! Please try again.";
+            setTimeout(() => {
+                resetSelection();
+                selectedSquares = [];
+            }, 500);
+        }
+    } else {
+        document.getElementById("status").innerHTML = "You must select exactly 4 squares to form an L shape.";
+        setTimeout(() => {
+            resetSelection();
+            selectedSquares = [];
+        }, 500);
+    }
+}
+
+var symbol = [17];
+var turn = 2;
+var coinTurn = false;
+var coin1 = 1;
+var coin2 = 16;
+var selectedSquares = [];
+var isDragging = false;
+
+for (num = 0; num < 17; num++) {
+symbol[num] = 0;
+}
+
+symbol[6] = 1;  
+symbol[10] = 1; 
+symbol[14] = 1; 
+symbol[15] = 1; 
+
+symbol[2] = 2;  
+symbol[3] = 2; 
+symbol[7] = 2;  
+symbol[11] = 2; 
+
+symbol[coin1] = 3; 
+symbol[coin2] = 3; 
+
+function getPlayerName(playerNum) {
+return playerNum === 1 ? "Red" : "Blue";
+}
+
+function resetSelection() {
+
+for (var i = 1; i <= 16; i++) {
+
+if (symbol[i] == 1) {
+
+document.getElementById(String(i)).src = "fence_war_red.gif";
+} else if (symbol[i] == 2) {
+
+document.getElementById(String(i)).src = "fence_war_blue.gif";
+} else if (symbol[i] == 3) {
+
+document.getElementById(String(i)).src = "coin.jpg";
+} else {
+
+document.getElementById(String(i)).src = "fence_war_grey.gif";  
+} 
+
+}
+selectedSquares = [];
+}
+
+function isAdjacent(pos1, pos2) {
+
+var row1 = Math.ceil(pos1 / 4);
+var col1 = pos1 % 4;
+if (col1 === 0) col1 = 4;
+
+var row2 = Math.ceil(pos2 / 4);
+var col2 = pos2 % 4;
+if (col2 === 0) col2 = 4;
+
+return (Math.abs(row1 - row2) === 1 && col1 === col2) || (Math.abs(col1 - col2) === 1 && row1 === row2);
+}
+
+function isConnectedShape(positions) {
+
+if (positions.length <= 1) return true;
+var adjacencyList = {};
+
+for (var i = 0; i < positions.length; i++) {
+adjacencyList[i] = [];
+}
+
+for (var i = 0; i < positions.length; i++) {
+for (var j = i + 1; j < positions.length; j++) {
+
+if (isAdjacent(positions[i], positions[j])) {
+adjacencyList[i].push(j);
+adjacencyList[j].push(i);
+}
+
+}
+
+}
+
+var visited = [];
+for (var i = 0; i < positions.length; i++) {
+visited.push(false);
+}
+
+var queue = [0];
+visited[0] = true;
+
+while (queue.length > 0) {
+var current = queue.shift();
+for (var i = 0; i < adjacencyList[current].length; i++) {
+var neighbor = adjacencyList[current][i];
+
+if (!visited[neighbor]) {
+visited[neighbor] = true;
+queue.push(neighbor);
+}
+
+}
+
+}
+
+for (var i = 0; i < visited.length; i++) {
+if (!visited[i]) return false;
+}
+
+return true;
+}
+
+function isProperLShape(positions) {
+
+if (positions.length !== 4) return false;
+
+var coords = [];
+for (var i = 0; i < positions.length; i++) {
+
+var pos = positions[i];
+var row = Math.ceil(pos / 4);
+var col = pos % 4;
+
+if (col === 0) col = 4;
+
+coords.push([row, col]);
+}
+
+var allSameRow = true;
+var allSameCol = true;
+
+for (var i = 1; i < coords.length; i++) {
+
+if (coords[i][0] !== coords[0][0]) allSameRow = false;
+if (coords[i][1] !== coords[0][1]) allSameCol = false;
+}
+
+if (allSameRow || allSameCol) return false;
+if (!isConnectedShape(positions)) return false;
+
+var minRow = 5, minCol = 5, maxRow = 0, maxCol = 0;
+
+for (var i = 0; i < coords.length; i++) {
+
+minRow = Math.min(minRow, coords[i][0]);
+minCol = Math.min(minCol, coords[i][1]);
+maxRow = Math.max(maxRow, coords[i][0]);
+maxCol = Math.max(maxCol, coords[i][1]);
+}
+
+if (maxRow - minRow > 2 || maxCol - minCol > 2) {
+
+return false;
+}
+
+var grid = [];
+
+for (var i = 0; i < 3; i++) {
+grid[i] = [0, 0, 0];
+}
+
+for (var i = 0; i < coords.length; i++) {
+
+var relRow = coords[i][0] - minRow;
+var relCol = coords[i][1] - minCol;
+
+if (relRow < 3 && relCol < 3) {
+
+grid[relRow][relCol] = 1;}}
+  
+for (var i = 0; i < 3; i++) {
+
+if (i < 2 && grid[i][0] == 1 && grid[i][1] == 1 && grid[i+1][1] == 1 && grid[i+1][2] == 1) {
+return false;
+}
+
+if (i < 2 && grid[i][1] == 1 && grid[i][2] == 1 && grid[i+1][0] == 1 && grid[i+1][1] == 1) {
+return false;
+}
+
+if (i < 2 && grid[0][i] == 1 && grid[1][i] == 1 && grid[1][i+1] == 1 && grid[2][i+1] == 1) {
+return false;
+}
+
+if (i < 2 && grid[0][i+1] == 1 && grid[1][i] == 1 && grid[1][i+1] == 1 && grid[2][i] == 1) {
+return false; 
+}
+
+}
+
+var adjacencyList = {};
+
+for (var i = 0; i < positions.length; i++) {
+adjacencyList[i] = [];
+}
+
+for (var i = 0; i < positions.length; i++) {
+for (var j = i + 1; j < positions.length; j++) {
+
+if (isAdjacent(positions[i], positions[j])) {
+adjacencyList[i].push(j);
+adjacencyList[j].push(i);
+}
+
+}
+
+}
+
+var connectionCounts = [];
+
+for (var i = 0; i < positions.length; i++) {
+connectionCounts.push(adjacencyList[i].length);
+}
+
+var endpointCount = 0;
+for (var i = 0; i < connectionCounts.length; i++) {
+
+if (connectionCounts[i] === 1) endpointCount++;
+}
+
+
+return endpointCount === 2;
+}
+
+function isValidPlacement(squares) {
+    // Не можна займати чужі клітини або монетки
+    for (var i = 0; i < squares.length; i++) {
+        var box = squares[i];
+        if (symbol[box] !== 0 && symbol[box] !== turn) {
+            return false;
+        }
+    }
+    // Не можна залишати L на тому ж місці
+    var currentL = [];
+    for (var i = 1; i <= 16; i++) {
+        if (symbol[i] === turn) currentL.push(i);
+    }
+    currentL.sort();
+    var newL = squares.slice().sort();
+    var same = currentL.length === newL.length;
+    if (same) {
+        for (var i = 0; i < currentL.length; i++) {
+            if (currentL[i] !== newL[i]) {
+                same = false;
+                break;
+            }
+        }
+    }
+    if (same) return false;
+    return true;
+}
+
+function moveLShape(newSquares) {
+    // Очищаємо старі позиції
+    for (var i = 1; i <= 16; i++) {
+        if (symbol[i] === turn) {
+            symbol[i] = 0;
+            document.getElementById(String(i)).src = "fence_war_grey.gif";
+        }
+    }
+    // Встановлюємо нові позиції
+    for (var i = 0; i < newSquares.length; i++) {
+        var box = newSquares[i];
+        symbol[box] = turn;
+        var pieceImage = turn === 1 ? "fence_war_red.gif" : "fence_war_blue.gif";
+        document.getElementById(String(box)).src = pieceImage;
+    }
+    // Дозволяємо хід монеткою
+    coinTurn = true;
+    // Відправляємо хід на сервер
+    sendMove({
+        moveType: 'lshape',
+        squares: newSquares
+    });
+    // myTurn залишаємо true для монетки
+}
+
+function sendMove(moveData) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        const data = {
+            gameId: gameId,
+            playerNumber: playerNumber,
+            ...moveData
+        };
+        ws.send(JSON.stringify(data));
+        // Only set myTurn = false if the move is not 'lshape'
+        if (moveData.moveType === 'coin' || moveData.moveType === 'skip') {
+            myTurn = false;
+            document.getElementById("status").innerHTML = "Waiting for opponent's move...";
+        }
+        // For 'lshape', keep myTurn = true for the coin phase
+    }
+}
+
+function selectCoin(whichbox) {
+    if (!myTurn || !coinTurn) return;
+
+    // Якщо вибираємо монетку вперше
+    if (selectedSquares.length === 0) {
+        if (symbol[whichbox] === 3) {
+            selectedSquares.push(whichbox);
+            // Підсвічуємо вибрану монетку
+            document.getElementById(String(whichbox)).style.border = "2px solid yellow";
+            // Показуємо підказку
+            document.getElementById("status").innerHTML = "Now click an empty square to move the coin";
+            
+            // Очищаємо підсвічування інших монеток
+            if (whichbox !== coin1 && symbol[coin1] === 3) {
+                document.getElementById(String(coin1)).style.border = "";
+            }
+            if (whichbox !== coin2 && symbol[coin2] === 3) {
+                document.getElementById(String(coin2)).style.border = "";
+            }
+        }
+        return;
+    }
+
+    // Якщо вже вибрали монетку і тепер вибираємо куди її переміщати
+    if (selectedSquares.length === 1) {
+        if (symbol[whichbox] === 0) {
+            var oldPos = selectedSquares[0];
+            
+            // Переміщаємо монетку
+            symbol[whichbox] = 3;
+            symbol[oldPos] = 0;
+            
+            // Оновлюємо відображення
+            document.getElementById(String(whichbox)).src = "coin.jpg";
+            document.getElementById(String(oldPos)).src = "fence_war_grey.gif";
+            document.getElementById(String(oldPos)).style.border = "";
+            
+            // Оновлюємо позиції монеток
+            if (oldPos === coin1) {
+                coin1 = whichbox;
+            } else if (oldPos === coin2) {
+                coin2 = whichbox;
+            }
+
+            // Відправляємо хід
+            sendMove({
+                moveType: 'coin',
+                from: oldPos,
+                to: whichbox
+            });
+
+            // Скидаємо стан
+            coinTurn = false;
+            selectedSquares = [];
+            // myTurn = false; // Now handled in sendMove
+
+            // Оновлюємо інтерфейс
+            document.getElementById("coinBtn").style.display = "none";
+            document.getElementById("skipBtn").style.display = "none";
+            // document.getElementById("status").innerHTML = "Waiting for opponent's move..."; // Now handled in sendMove
+        }
+    }
+}
+
+function startCoinTurn() {
+    if (!myTurn || !coinTurn) return;
+    
+    // Очищаємо старі підсвічування
+    if (symbol[coin1] === 3) {
+        document.getElementById(String(coin1)).style.border = "2px solid yellow";
+    }
+    if (symbol[coin2] === 3) {
+        document.getElementById(String(coin2)).style.border = "2px solid yellow";
+    }
+
+    selectedSquares = [];
+    document.getElementById("status").innerHTML = "Select a coin to move, or click Skip";
+    document.getElementById("coinBtn").style.display = "none";
+    document.getElementById("skipBtn").style.display = "inline";
+}
+
+function skipCoinMove() {
+    if (!myTurn || !coinTurn) return;
+
+    // Очищаємо підсвічування
+    if (symbol[coin1] === 3) {
+        document.getElementById(String(coin1)).style.border = "";
+    }
+    if (symbol[coin2] === 3) {
+        document.getElementById(String(coin2)).style.border = "";
+    }
+
+    // Відправляємо хід
+    sendMove({
+        moveType: 'skip'
+    });
+
+    // Міняємо хід
+    turn = turn === 1 ? 2 : 1;
+    // myTurn = false; // Now handled in sendMove
+    coinTurn = false;
+
+    // Оновлюємо інтерфейс
+    document.getElementById("coinBtn").style.display = "none";
+    document.getElementById("skipBtn").style.display = "none";
+    // document.getElementById("status").innerHTML = "Waiting for opponent's move..."; // Now handled in sendMove
+}
+
+function hasValidMoves() {
+
+var currentLShape = [];
+for (var i = 1; i <= 16; i++) {
+if (symbol[i] === turn) {
+
+currentLShape.push(i);
+}
+
+}
+
+var originalSymbol = symbol.slice();
+for (var i = 1; i <= 16; i++) {
+
+if (symbol[i] === turn) {
+symbol[i] = 0;
+}
+
+}
+
+var shapes = [
+
+[[0,0], [1,0], [2,0], [2,1]],
+[[0,0], [0,1], [0,2], [1,0]],  
+[[0,0], [0,1], [1,1], [2,1]], 
+[[0,0], [1,0], [1,1], [1,2]], 
+[[0,0], [1,0], [2,0], [0,1]],  
+[[0,0], [0,1], [0,2], [1,2]], 
+[[0,0], [0,1], [1,0], [2,0]], 
+[[0,0], [1,0], [1,1], [1,2]]  
+];
+
+var foundValidMove = false;
+
+for (var s = 0; s < shapes.length; s++) {
+for (var startRow = 1; startRow <= 4; startRow++) {
+for (var startCol = 1; startCol <= 4; startCol++) {
+
+var positions = [];
+var valid = true;
+
+for (var i = 0; i < shapes[s].length; i++) {
+
+var row = startRow + shapes[s][i][0];
+var col = startCol + shapes[s][i][1];
+
+if (row < 1 || row > 4 || col < 1 || col > 4) {
+valid = false;
+
+break;
+}
+
+var pos = (row - 1) * 4 + col;
+if (symbol[pos] !== 0) {
+valid = false;
+
+break;
+}
+positions.push(pos);
+}
+
+if (valid && positions.length === 4) {
+
+positions.sort();
+var sortedCurrentL = currentLShape.slice().sort();
+var isDifferent = false;
+
+if (positions.length !== sortedCurrentL.length) {
+isDifferent = true;
+
+} else {
+
+for (var i = 0; i < positions.length; i++) {
+if (positions[i] !== sortedCurrentL[i]) {
+
+isDifferent = true;
+
+break;
+}
+
+}
+
+}
+
+if (isDifferent) {
+
+foundValidMove = true;
+
+break;
+}
+
+}
+
+}
+if (foundValidMove) break;
+}
+
+if (foundValidMove) break;
+}
+
+symbol = originalSymbol;
+
+return foundValidMove;
+}
+
+function checkWinCondition() {
+
+var nextTurn = turn == 1 ? 2 : 1;
+var currentTurn = turn;
+turn = nextTurn;
+
+var hasMove = hasValidMoves();
+turn = currentTurn;
+
+if (!hasMove) {
+document.getElementById("status").innerHTML = "Game Over! Player " + getPlayerName(turn) + " wins! Player " + getPlayerName(nextTurn) + " has no valid moves.";
+
+coinTurn = true;
+
+document.getElementById("coinBtn").style.display = "none";
+document.getElementById("skipBtn").style.display = "none";
+
+return true;
+}
+return false;
+}
+
+function initializeBoard() {
+
+for (var i = 1; i <= 16; i++) {
+if (symbol[i] == 1) {
+
+document.getElementById(String(i)).src = "fence_war_red.gif";
+
+} else if (symbol[i] == 2) {
+
+document.getElementById(String(i)).src = "fence_war_blue.gif";
+
+} else if (symbol[i] == 3) {
+
+document.getElementById(String(i)).src = "coin.jpg";
+
+} else {
+
+document.getElementById(String(i)).src = "fence_war_grey.gif";
+}
+
+}
+
+document.getElementById("status").innerHTML = "Player " + getPlayerName(turn) + "'s turn. Drag to select your L shape.";
+document.getElementById("coinBtn").style.display = "none";
+document.getElementById("skipBtn").style.display = "none";
+}
+
+function nextTurn() {
+    turn = playerNumber;
+    myTurn = true;
+    coinTurn = false;
+    document.getElementById("status").innerHTML = "Your turn. Drag to select your L shape.";
+}
+
+// --- Lobby logic ---
+function randomRoomCode() {
+    return Math.random().toString(36).substr(2, 6).toUpperCase();
+}
+
+function createRoom() {
+    const code = randomRoomCode();
+    joinRoom(code);
+}
+
+function joinRoom(code) {
+    if (joined) return;
+    roomId = code;
+    joined = true;
+    document.getElementById("lobby").style.display = "none";
+    document.getElementById("gameArea").style.display = "block";
+    connectToServer(roomId);
+}
+
+function renderRoomList(rooms) {
+    const ul = document.getElementById("roomList");
+    ul.innerHTML = "";
+    rooms.forEach(room => {
+        const li = document.createElement("li");
+        li.className = "room-item";
+        
+        const info = document.createElement("div");
+        info.className = "room-info";
+        info.innerHTML = `
+            <div class="room-id">Кімната: ${room.roomId}</div>
+            <div class="room-status">
+                ${room.players}/2 гравців | ${room.status}
+            </div>
+        `;
+        
+        li.appendChild(info);
+        
+        if (room.players === 1) {
+            const btn = document.createElement("button");
+            btn.className = "join-btn";
+            btn.textContent = "Приєднатись";
+            btn.onclick = function() { joinRoom(room.roomId); };
+            li.appendChild(btn);
+        }
+        
+        ul.appendChild(li);
+    });
+}
+
+// --- WebSocket room list polling ---
+let lobbyWs;
+function pollRooms() {
+    if (lobbyWs && lobbyWs.readyState === WebSocket.OPEN) {
+        lobbyWs.send(JSON.stringify({ type: "list-rooms" }));
+    }
+}
+function setupLobbyWs() {
+    lobbyWs = new WebSocket(location.origin.replace(/^http/, 'ws'));
+    lobbyWs.onopen = function() {
+        pollRooms();
+        setInterval(pollRooms, 2000);
+    };
+    lobbyWs.onmessage = function(event) {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === "room-list") {
+            renderRoomList(data.rooms);
+        }
+    };
+}
+window.onload = function() {
+    setupLobbyWs();
+    initializeBoard();
+};
+// --- end lobby logic ---
+</script>
+
+</body>
+</html>
+
+
